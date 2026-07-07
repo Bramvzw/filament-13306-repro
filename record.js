@@ -46,7 +46,8 @@ const banner = (page, text, color) => page.evaluate(([text, color]) => {
     await page.click('button[type="submit"]')
     await page.waitForURL((url) => !url.toString().includes('login'), { timeout: 15000 })
 
-    await page.goto('http://repro13306.test/admin/documents/1/edit')
+    await page.goto('http://repro13306.test/admin/documents')
+    await page.click('a:has-text("Edit"), [role="row"] >> text=Edit')
     await page.waitForSelector('text=New attachment')
 
     const label = variant === 'before'
@@ -84,21 +85,12 @@ const banner = (page, text, color) => page.evaluate(([text, color]) => {
     await banner(page, 'small-file.pdf is done — big-file.pdf is STILL UPLOADING', '#b45309')
     await page.waitForTimeout(2000)
 
-    await banner(page, 'Now simulating a Livewire re-render delivering updated state (as happens with ->poll(), see #13306)', '#6d28d9')
+    await banner(page, 'User removes the completed small-file.pdf with its ✕ button, while big-file.pdf is still uploading', '#6d28d9')
     await page.waitForTimeout(1500)
 
-    await page.evaluate(() => {
-        const comp = (() => {
-            for (const el of document.querySelectorAll('[role="dialog"] [x-data]')) {
-                for (const data of (el._x_dataStack ?? [])) {
-                    if ('shouldUpdateState' in data && data.pond) return data
-                }
-            }
-        })()
-        comp.state = { 'server-uuid-small': 'attachments/small-file.pdf' }
-    })
+    await page.click('.filepond--item:has-text("small-file.pdf") .filepond--action-revert-item-processing')
 
-    await page.waitForTimeout(4000)
+    await page.waitForTimeout(6000)
 
     const outcome = await page.evaluate(() => {
         const comp = (() => {
@@ -116,8 +108,8 @@ const banner = (page, text, color) => page.evaluate(([text, color]) => {
     await banner(
         page,
         bigSurvived
-            ? 'RESULT: big-file.pdf survived the re-render and keeps uploading — no file loss'
-            : 'RESULT: big-file.pdf was WIPED from the upload list mid-upload — the file is lost',
+            ? 'RESULT: only small-file.pdf was removed — big-file.pdf keeps uploading, no file loss'
+            : 'RESULT: big-file.pdf was WIPED mid-upload along with the removed file — the file is lost',
         bigSurvived ? '#15803d' : '#b91c1c',
     )
 

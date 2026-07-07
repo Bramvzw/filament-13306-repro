@@ -13,13 +13,13 @@ Two things, separately:
    flips back to `true` as soon as the *first* file finishes uploading, while the other file is still
    in flight. In this setup that window is ~9 seconds long. This part involves no scripting at all —
    it is observable by watching the Alpine component's state while two files upload.
-2. **The wipe (trigger scripted).** While that window is open, any state update that reaches the
-   `$watch('state')` handler *without* `livewire-file:` values rebuilds the FilePond list from
-   server-confirmed uploads only, dropping the in-flight file. In the recordings this state update is
-   scripted (`component.state = { ... }`) to make it deterministic — it stands in for a server
-   round-trip delivering final paths during the window, which is the hard-to-time ingredient in the
-   `->poll()` reports on the issue. The point of the fix is that the window should not be open at all
-   while uploads are in flight; with the fix applied, the same scripted update is a no-op.
+2. **The wipe (fully organic user action).** While that window is open, remove the *completed* file
+   with its ✕ ("tap to undo") button. The removal deletes the file's temporary `livewire-file:` value
+   from the state, so the resulting state update passes the guard in the `$watch('state')` handler,
+   which then rebuilds the FilePond list from server-confirmed uploads only — wiping the file that is
+   still uploading. No scripting involved: upload two files, remove the finished one while the other
+   is still busy, and the busy one disappears with it. With the fix applied, the same action removes
+   only the file you clicked; the in-flight upload survives and completes.
 
 ## Requirements
 
@@ -76,17 +76,19 @@ Unpatched, you will see `shouldUpdateState: true` from the moment `small-file.pd
 (complete) while `big-file.pdf` is still status `3` (processing) — for the remaining ~9 seconds of its
 upload. With the PR applied, it stays `false` until both are done.
 
-## Triggering the wipe during the window
+## Triggering the wipe during the window (organic)
 
-While the window is open (small done, big still uploading), deliver a state update without
-`livewire-file:` values — this is the scripted stand-in for a server round-trip doing the same:
+While the window is open (small done, big still uploading), click the ✕ ("tap to undo") button on
+the **completed** `small-file.pdf`. Unpatched: `big-file.pdf` disappears from the list mid-upload
+along with it — the file is lost. Patched: only `small-file.pdf` is removed and `big-file.pdf`
+completes normally.
+
+Any other state update without `livewire-file:` values delivered during the window has the same
+effect, which can also be shown deterministically from the console:
 
 ```js
 component.state = { 'some-uuid': 'attachments/small-file.pdf' }
 ```
-
-Unpatched: the `$watch('state')` handler rebuilds the FilePond list and `big-file.pdf` disappears
-mid-upload. Patched: nothing happens; the upload completes.
 
 ## Recordings
 
