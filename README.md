@@ -43,18 +43,21 @@ herd link filament-13306-repro   # or valet link
 
 Login: `demo@example.com` / `password`
 
-The app contains:
+The app is deliberately bare: a `Document` resource whose `AttachmentsRelationManager` create-modal
+has `FileUpload::make('files')->multiple()`, and nothing else. There is no custom middleware, no
+polling, no custom JavaScript — nothing that could be mistaken for an ingredient of the bug.
 
-- A `Document` resource with an `AttachmentsRelationManager` (`->poll('3s')`) whose create-modal has
-  `FileUpload::make('files')->multiple()` — mirroring the setup reported in #13306.
-- `App\Http\Middleware\SlowDownLivewireUploads`: delays `livewire/upload-file` requests
-  (>1MB → 12s, otherwise 3s) so the upload timing is deterministic instead of depending on a slow
-  connection. The test files (1.5MB / 300KB) stay under PHP's default 2M `post_max_size`.
+**Slowing the upload down**: the race window is the remaining upload time of the slower file, so you
+need uploads that take more than an instant (as they do for any real user on a normal connection).
+Use browser-level network throttling: Chrome DevTools → Network tab → throttling dropdown → add a
+custom profile with an upload speed of ~100 kbit/s. The test files (1.5MB / 300KB) then take roughly
+15s and 3s, giving you a comfortable window. They stay under PHP's default 2M `post_max_size`.
 
 ## Observing the race window (no scripting)
 
-1. Go to `/admin/documents/1/edit`, click **New attachment**.
-2. Select `testfiles/big-file.pdf` **and** `testfiles/small-file.pdf` together.
+1. Enable the upload throttling described above.
+2. Go to `/admin/documents/1/edit`, click **New attachment**.
+3. Select `testfiles/big-file.pdf` **and** `testfiles/small-file.pdf` together.
 3. In the browser console, watch the component:
 
 ```js
@@ -73,8 +76,8 @@ setInterval(() => console.log(
 ```
 
 Unpatched, you will see `shouldUpdateState: true` from the moment `small-file.pdf` reaches status `5`
-(complete) while `big-file.pdf` is still status `3` (processing) — for the remaining ~9 seconds of its
-upload. With the PR applied, it stays `false` until both are done.
+(complete) while `big-file.pdf` is still status `3` (processing) — for the remainder of its upload.
+With the PR applied, it stays `false` until both are done.
 
 ## Triggering the wipe during the window (organic)
 
@@ -93,9 +96,11 @@ component.state = { 'some-uuid': 'attachments/small-file.pdf' }
 ## Recordings
 
 `record.js` is the Playwright script used to produce the before/after videos on the PR
-(`npm install playwright`, then `node record.js before` / `node record.js after`). It swaps the
-served `file-upload.js` bundle between the pristine packagist build and the PR build — adjust the
-paths at the top of the script to your environment.
+(`npm install playwright`, then `node record.js before` / `node record.js after`). It applies the
+same network throttling via CDP, performs the exact user actions described above (including the real
+click on the ✕ button), and records the browser session. Point `BUNDLE_BEFORE`/`BUNDLE_AFTER` at the
+pristine and patched `file-upload.js` builds, or leave them unset to record whatever is currently
+served.
 
 ## Applying the fix
 

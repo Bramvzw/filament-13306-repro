@@ -2,22 +2,27 @@ const { chromium } = require('playwright')
 const fs = require('fs')
 const path = require('path')
 
-const SCRATCH = '/private/tmp/claude-501/-Users-bramvzw-PhpstormProjects-sibi/03ea32c3-ab70-41ed-8902-e6b1c683efa5/scratchpad'
-const APP = path.join(SCRATCH, 'repro13306')
-const SERVED_BUNDLE = path.join(APP, 'public/js/filament/forms/components/file-upload.js')
+// Usage: node record.js before|after
+//   APP_URL         (default http://filament-13306-repro.test)
+//   BUNDLE_BEFORE   optional path to a pristine file-upload.js build to place before recording
+//   BUNDLE_AFTER    optional path to a patched file-upload.js build to place before recording
+// The script throttles the upload connection via CDP, uploads two files, waits for the small one
+// to finish, clicks its ✕ ("tap to undo") button with a real trusted click, and records everything.
 
-const variant = process.argv[2] // 'before' | 'after'
+const variant = process.argv[2]
 if (!['before', 'after'].includes(variant)) {
     console.error('usage: node record.js before|after')
     process.exit(1)
 }
 
-const bundle = variant === 'before'
-    ? path.join(SCRATCH, 'original-file-upload.js')
-    : path.join(SCRATCH, 'fixed-file-upload.js')
+const appUrl = process.env.APP_URL ?? 'http://filament-13306-repro.test'
+const servedBundle = path.join(__dirname, 'public/js/filament/forms/components/file-upload.js')
+const bundleOverride = variant === 'before' ? process.env.BUNDLE_BEFORE : process.env.BUNDLE_AFTER
 
-fs.copyFileSync(bundle, SERVED_BUNDLE)
-console.log(`bundel geplaatst: ${variant} (${fs.statSync(SERVED_BUNDLE).size} bytes)`)
+if (bundleOverride) {
+    fs.copyFileSync(bundleOverride, servedBundle)
+    console.log(`bundle placed: ${bundleOverride}`)
+}
 
 const banner = (page, text, color) => page.evaluate(([text, color]) => {
     let el = document.getElementById('demo-banner')
@@ -35,23 +40,31 @@ const banner = (page, text, color) => page.evaluate(([text, color]) => {
     const browser = await chromium.launch()
     const context = await browser.newContext({
         viewport: { width: 1280, height: 900 },
-        recordVideo: { dir: path.join(SCRATCH, 'videos'), size: { width: 1280, height: 900 } },
+        recordVideo: { dir: path.join(__dirname, 'videos'), size: { width: 1280, height: 900 } },
     })
     const page = await context.newPage()
 
-    // Login
-    await page.goto('http://repro13306.test/admin/login')
-    await page.fill('input[type="email"]', 'bram@example.com')
+    const cdp = await context.newCDPSession(page)
+    await cdp.send('Network.enable')
+    await cdp.send('Network.emulateNetworkConditions', {
+        offline: false,
+        latency: 20,
+        downloadThroughput: 5_000_000,
+        uploadThroughput: 100_000,
+    })
+
+    await page.goto(appUrl + '/admin/login')
+    await page.fill('input[type="email"]', 'demo@example.com')
     await page.fill('input[type="password"]', 'password')
     await page.click('button[type="submit"]')
-    await page.waitForURL((url) => !url.toString().includes('login'), { timeout: 15000 })
+    await page.waitForURL((url) => !url.toString().includes('login'), { timeout: 20000 })
 
-    await page.goto('http://repro13306.test/admin/documents')
+    await page.goto(appUrl + '/admin/documents')
     await page.click('a:has-text("Edit"), [role="row"] >> text=Edit')
     await page.waitForSelector('text=New attachment')
 
     const label = variant === 'before'
-        ? 'BEFORE — unpatched file-upload.js from filament/forms (packagist)'
+        ? 'BEFORE — unpatched file-upload.js'
         : 'AFTER — patched file-upload.js (activeUploads counter)'
     await banner(page, label, variant === 'before' ? '#b91c1c' : '#15803d')
     await page.waitForTimeout(1500)
@@ -60,50 +73,26 @@ const banner = (page, text, color) => page.evaluate(([text, color]) => {
     await page.waitForSelector('[role="dialog"] input[type="file"]', { state: 'attached' })
     await page.waitForTimeout(800)
 
-    await banner(page, 'Uploading 2 files in parallel: big-file.pdf (slow, ~12s) + small-file.pdf (fast, ~3s)', '#1d4ed8')
+    await banner(page, 'Uploading 2 files in parallel on a throttled connection (100 KB/s up): big-file.pdf (1.5MB) + small-file.pdf (300KB)', '#1d4ed8')
     await page.setInputFiles('[role="dialog"] input[type="file"]', [
-        path.join(SCRATCH, 'testfiles/big-file.pdf'),
-        path.join(SCRATCH, 'testfiles/small-file.pdf'),
+        path.join(__dirname, 'testfiles/big-file.pdf'),
+        path.join(__dirname, 'testfiles/small-file.pdf'),
     ])
 
-    // Wacht op het race-venster: small COMPLETE (5), big nog PROCESSING (3)
-    await page.waitForFunction(() => {
-        const comp = (() => {
-            for (const el of document.querySelectorAll('[role="dialog"] [x-data]')) {
-                for (const data of (el._x_dataStack ?? [])) {
-                    if ('shouldUpdateState' in data && data.pond) return data
-                }
-            }
-        })()
-        if (!comp) return false
-        const files = comp.pond.getFiles()
-        const smallDone = files.some(f => f.filename === 'small-file.pdf' && f.status === 5)
-        const bigBusy = files.some(f => f.filename === 'big-file.pdf' && f.status === 3)
-        return smallDone && bigBusy
-    }, { timeout: 20000 })
-
+    await page.waitForSelector('.filepond--item:has-text("small-file.pdf") .filepond--action-revert-item-processing', { timeout: 30000 })
     await banner(page, 'small-file.pdf is done — big-file.pdf is STILL UPLOADING', '#b45309')
     await page.waitForTimeout(2000)
 
     await banner(page, 'User removes the completed small-file.pdf with its ✕ button, while big-file.pdf is still uploading', '#6d28d9')
     await page.waitForTimeout(1500)
-
     await page.click('.filepond--item:has-text("small-file.pdf") .filepond--action-revert-item-processing')
 
-    await page.waitForTimeout(6000)
+    await page.waitForTimeout(8000)
 
-    const outcome = await page.evaluate(() => {
-        const comp = (() => {
-            for (const el of document.querySelectorAll('[role="dialog"] [x-data]')) {
-                for (const data of (el._x_dataStack ?? [])) {
-                    if ('shouldUpdateState' in data && data.pond) return data
-                }
-            }
-        })()
-        return comp.pond.getFiles().map(f => f.filename + ':' + f.status).join(', ') || 'EMPTY'
-    })
-    console.log('pond na re-render-tik:', outcome)
-
+    const outcome = await page.evaluate(() =>
+        [...document.querySelectorAll('[role="dialog"] .filepond--item')]
+            .map((item) => item.querySelector('.filepond--file-info-main')?.textContent?.trim())
+            .join(', '))
     const bigSurvived = outcome.includes('big-file.pdf')
     await banner(
         page,
@@ -112,15 +101,13 @@ const banner = (page, text, color) => page.evaluate(([text, color]) => {
             : 'RESULT: big-file.pdf was WIPED mid-upload along with the removed file — the file is lost',
         bigSurvived ? '#15803d' : '#b91c1c',
     )
-
-    // Laat bij de fix de upload ook echt afronden in beeld
-    await page.waitForTimeout(bigSurvived ? 10000 : 5000)
+    await page.waitForTimeout(bigSurvived ? 12000 : 5000)
 
     const video = page.video()
     await context.close()
     const videoPath = await video.path()
-    const target = path.join(SCRATCH, 'videos', variant + '.webm')
+    const target = path.join(__dirname, 'videos', variant + '.webm')
     fs.renameSync(videoPath, target)
-    console.log('video: ' + target + ' | big-file overleefde: ' + bigSurvived)
+    console.log('video: ' + target + ' | big-file survived: ' + bigSurvived)
     await browser.close()
 })()
