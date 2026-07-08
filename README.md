@@ -104,9 +104,19 @@ served.
 
 ## Applying the fix
 
+The fix lives in [filamentphp/filament#20121](https://github.com/filamentphp/filament/pull/20121),
+which includes the rebuilt `file-upload.js` bundle. To test it in this app:
+
 ```bash
-gh pr checkout 20121   # in a filament clone
+# elsewhere, in a clone of filamentphp/filament (NOT this repository):
+gh repo clone filamentphp/filament
+cd filament
+gh pr checkout 20121
+
+# then copy the patched bundle into this app, replacing the served one:
+cp packages/forms/dist/components/file-upload.js \
+   /path/to/filament-13306-repro/public/js/filament/forms/components/file-upload.js
 ```
 
-or copy the patched `packages/forms/dist/components/file-upload.js` from the PR branch over
-`public/js/filament/forms/components/file-upload.js` in this app.
+Hard-refresh the browser afterwards — the bundle is cached. To get back to the unpatched
+version, run `php artisan filament:upgrade` in this app (it republishes the vendor assets).
